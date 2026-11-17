@@ -113,8 +113,9 @@ README.md             # Project documentation and evidence portfolio
 | Incident triage & closure | :white_check_mark: Completed | [View](docs/screenshots/07-incident-triage-details.png) |
 | Query results validated | :white_check_mark: Completed | [View](docs/screenshots/06-kql-query-results.png) |
 
-### KQL Query Execution & Telemetry Results in Log Analytics
+### KQL Detection Rule Execution & Unit Test (`windows_bruteforce_4625.yaml`)
 ![KQL Query Results](docs/screenshots/06-kql-query-results.png)
+*Log Analytics execution of the `windows_bruteforce_4625.yaml` rule against a `datatable` unit-test payload: verifies dual-stack `::ffff:` IPv4 stripping (`10.0.4.15`), exclusion of service logons (`LogonType == 5`) and machine accounts (`WS01$`), and threshold aggregation (`FailedAttempts = 6`).*
 
 ### Microsoft Sentinel Live Incident Queue
 ![Sample Incident](docs/screenshots/03-incident.png)
