@@ -1,0 +1,84 @@
+id: 9e34363d-fdc4-43ac-b0f0-1ecacafa34b6
+name: User Added to Privileged Group (4728/4732/4756)
+description: |
+  Detects when an account is added to a high-privilege local or Active Directory security group
+  (Event IDs 4728 for global groups, 4732 for local groups, and 4756 for universal groups).
+  Monitors well-known administrative SIDs and RIDs to ensure resilience across localized Windows OS versions.
+  Prerequisite: Requires 'Audit Security Group Management' enabled in Windows Audit Policy.
+kind: Scheduled
+version: 1.0.0
+severity: High
+status: Available
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - SecurityEvent
+queryFrequency: PT15M
+queryPeriod: PT30M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - Persistence
+  - PrivilegeEscalation
+relevantTechniques:
+  - T1098
+query: |
+  // Lookback window provides 15m overlap with PT15M frequency
+  let lookback = 30m;
+  let builtinSids = dynamic([
+      "S-1-5-32-544", // Administrators
+      "S-1-5-32-548", // Account Operators
+      "S-1-5-32-549", // Server Operators
+      "S-1-5-32-551"  // Backup Operators
+  ]);
+  let privilegedGroupNames = dynamic([
+      "Administrators",
+      "Domain Admins",
+      "Enterprise Admins",
+      "Schema Admins",
+      "Account Operators",
+      "Backup Operators",
+      "Server Operators",
+      "DnsAdmins"
+  ]);
+  SecurityEvent
+  | where TimeGenerated >= ago(lookback)
+  | where EventID in (4728, 4732, 4756)
+  | where TargetSid in (builtinSids)
+       or TargetSid matches regex @"-(512|518|519)$" // Domain Admins, Schema Admins, Enterprise Admins
+       or TargetUserName in~ (privilegedGroupNames)
+  | extend AddedMember = iff(MemberName in ("", "-"), MemberSid, MemberName)
+  | extend AddedMemberName = iff(AddedMember has @"\", tostring(split(AddedMember, @"\")[ -1]), AddedMember)
+  | project
+      TimeGenerated,
+      Computer,
+      EventID,
+      TargetGroup = TargetUserName,
+      AddedMember,
+      AddedMemberName,
+      ActorAccount = SubjectUserName,
+      ActorDomain = SubjectDomainName,
+      Activity
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: Computer
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: ActorAccount
+      - identifier: NTDomain
+        columnName: ActorDomain
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: AddedMemberName
+customDetails:
+  ModifiedGroup: TargetGroup
+  AddedUser: AddedMember
+  PerformedBy: ActorAccount
+falsePositives: |
+  Authorized Identity and Access Management (IAM) administrative updates.
+  Verify with change management tickets or PAM approvals for the actor account.
+  Prerequisite: Requires 'Audit Security Group Management' enabled in Windows Audit Policy.

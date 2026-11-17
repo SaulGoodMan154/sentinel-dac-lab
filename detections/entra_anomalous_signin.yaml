@@ -1,0 +1,84 @@
+id: 7f7645b2-fec7-4a65-a4e1-bf768d2e392f
+name: Entra ID Risky Sign-in - Identity Protection Signal or Anomalous Travel
+description: |
+  Detects anomalous Entra ID (Azure AD) sign-ins flagged with elevated risk levels or suspicious signals
+  (unlikely travel, anomalous token, unfamiliar features, anonymized IP) in SigninLogs.
+  Prerequisite: Requires Microsoft Entra ID P2 license for Identity Protection risk event population.
+kind: Scheduled
+version: 1.0.0
+severity: High
+status: Available
+requiredDataConnectors:
+  - connectorId: AzureActiveDirectory
+    dataTypes:
+      - SigninLogs
+queryFrequency: PT1H
+queryPeriod: PT2H
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - InitialAccess
+  - DefenseEvasion
+relevantTechniques:
+  - T1078.004
+query: |
+  // Overlapping 2h lookback with 1h frequency ensures late-arriving cloud audit logs are ingested
+  let lookback = 2h;
+  SigninLogs
+  | where TimeGenerated >= ago(lookback)
+  | where ResultType == 0
+  | extend CleanIP = replace_string(IPAddress, "::ffff:", "")
+  | extend City = tostring(LocationDetails.city),
+           Country = tostring(LocationDetails.countryOrRegion)
+  | extend RiskEventTypes = tostring(RiskEventTypes_V2),
+           RiskLevel = tostring(RiskLevelDuringSignIn)
+  | where RiskLevel in ("high", "medium") or RiskEventTypes has_any ("unlikelyTravel", "anonymizedIPAddress", "maliciousIPAddress", "unfamiliarFeatures", "suspiciousBrowser")
+  | summarize
+      SignInCount = count(),
+      DistinctLocations = make_set(strcat(City, ", ", Country), 10),
+      DistinctIPs = make_set(CleanIP, 10),
+      DistinctApps = make_set(AppDisplayName, 10),
+      ObservedRiskEvents = make_set(RiskEventTypes, 10),
+      ObservedRiskLevels = make_set(RiskLevel, 5),
+      LatestIP = take_any(CleanIP),
+      FirstSeen = min(TimeGenerated),
+      LastSeen = max(TimeGenerated)
+      by UserPrincipalName, UserId
+  | extend AccountName = tostring(split(UserPrincipalName, "@")[0]),
+           UPNSuffix = tostring(split(UserPrincipalName, "@")[1]),
+           LocationsStr = tostring(DistinctLocations),
+           RiskEventsStr = tostring(ObservedRiskEvents)
+  | project
+      FirstSeen,
+      LastSeen,
+      UserPrincipalName,
+      AccountName,
+      UPNSuffix,
+      UserId,
+      LatestIP,
+      SignInCount,
+      DistinctLocations,
+      DistinctIPs,
+      DistinctApps,
+      LocationsStr,
+      RiskEventsStr
+entityMappings:
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: AccountName
+      - identifier: UPNSuffix
+        columnName: UPNSuffix
+      - identifier: AadUserId
+        columnName: UserId
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: LatestIP
+customDetails:
+  ObservedLocations: LocationsStr
+  DetectedRisks: RiskEventsStr
+  TotalSignIns: SignInCount
+falsePositives: |
+  Legitimate corporate VPN connections, roaming mobile users, or conditional access transitions.
+  Prerequisite: Requires Entra ID P2 license for Identity Protection telemetry.

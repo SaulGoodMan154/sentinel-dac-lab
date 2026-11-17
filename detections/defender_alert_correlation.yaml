@@ -1,0 +1,76 @@
+id: c396498b-8cd9-4579-9137-0e6102eac8a4
+name: Multiple Defender / SecurityAlerts on Same Host or Account
+description: |
+  Correlates multiple security alerts (from Microsoft Defender for Endpoint, Identity, or Cloud) occurring
+  on the same host or user account within a 1-hour period. Excludes Sentinel-generated alerts to prevent recursion,
+  deduplicates status-update events by SystemAlertId, and requires 3+ distinct alert definitions.
+kind: Scheduled
+version: 1.0.0
+severity: High
+status: Available
+requiredDataConnectors:
+  - connectorId: MicrosoftDefenderForEndpoint
+    dataTypes:
+      - SecurityAlert
+queryFrequency: PT15M
+queryPeriod: PT1H
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - Execution
+  - LateralMovement
+relevantTechniques: []
+query: |
+  // Overlapping 1h lookback with 15m frequency ensures correlated alerts across boundary are evaluated
+  let lookback = 1h;
+  let alertCountThreshold = 3;
+  SecurityAlert
+  | where TimeGenerated >= ago(lookback)
+  | where ProductName != "Azure Sentinel" // Exclude Sentinel alerts to prevent recursive feedback loops
+  | where AlertSeverity in ("Medium", "High", "Critical")
+  | summarize arg_max(TimeGenerated, *) by SystemAlertId // Deduplicate alert status updates
+  | where isnotempty(CompromisedEntity) and CompromisedEntity !in~ ("Unknown", "-", "None")
+  | extend NormalizedEntity = tolower(CompromisedEntity)
+  | summarize
+      TotalAlerts = count(),
+      DistinctAlertNames = dcount(AlertName),
+      AlertList = make_set(AlertName, 10),
+      Severities = make_set(AlertSeverity, 5),
+      Products = make_set(ProductName, 5),
+      StartTime = min(TimeGenerated),
+      EndTime = max(TimeGenerated)
+      by NormalizedEntity
+  | where DistinctAlertNames >= alertCountThreshold
+  | extend AlertListStr = tostring(AlertList),
+           ProductsStr = tostring(Products),
+           TargetHost = iff(NormalizedEntity !has "@", NormalizedEntity, ""),
+           TargetAccount = iff(NormalizedEntity has "@", NormalizedEntity, "")
+  | project
+      StartTime,
+      EndTime,
+      NormalizedEntity,
+      TargetHost,
+      TargetAccount,
+      TotalAlerts,
+      DistinctAlertNames,
+      AlertList,
+      Severities,
+      Products,
+      AlertListStr,
+      ProductsStr
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: TargetHost
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: TargetAccount
+customDetails:
+  DistinctAlertsCount: DistinctAlertNames
+  FiredAlerts: AlertListStr
+  DetectingProducts: ProductsStr
+falsePositives: |
+  Vulnerability scanner testing multiple exploits against a honeypot or staging system.
+  Verify if the host is a designated red team target or testing environment.

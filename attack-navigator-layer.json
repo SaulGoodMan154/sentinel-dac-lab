@@ -1,0 +1,175 @@
+{
+  "name": "Sentinel Detection-as-Code Coverage",
+  "versions": {
+    "attack": "20",
+    "navigator": "5.0",
+    "layer": "4.5"
+  },
+  "domain": "enterprise-attack",
+  "description": "MITRE ATT&CK coverage map for 15 Microsoft Sentinel Scheduled Analytics Rules versioned as code.",
+  "filters": {
+    "platforms": [
+      "Windows",
+      "Azure AD",
+      "IaaS"
+    ]
+  },
+  "sorting": 0,
+  "layout": {
+    "layout": "side",
+    "aggregateFunction": "average",
+    "showID": true,
+    "showName": true,
+    "showAggregateScores": true,
+    "countUnscored": false
+  },
+  "hideDisabled": false,
+  "techniques": [
+    {
+      "techniqueID": "T1110.001",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: Windows Brute Force - Multiple Failed Logons (4625). Tested via run_all_safe.ps1.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1110.003",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: Password Spray - Many Users Few Failures Each. Tested via run_all_safe.ps1.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1059.001",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: Encoded PowerShell Command Line (-enc / FromBase64String). Tested via run_all_safe.ps1.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1027",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: Encoded PowerShell Command Line (-enc / FromBase64String). Tested via run_all_safe.ps1.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1098",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: User Added to Privileged Group (4728/4732/4756). Tested via run_all_safe.ps1.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1053.005",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: Suspicious Scheduled Task Created (4698). Tested via run_all_safe.ps1.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1543.003",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: Suspicious Service Installed (7045). Tested via run_all_safe.ps1.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1569.002",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: Suspicious Service Installed (7045 - PsExec / Remote Service Execution).",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1485",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: Mass File Deletion (Sysmon 23/26) & Azure Resource Deletion Spike.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1105",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: LOLBins Abuse - certutil remote download cache. Tested via run_all_safe.ps1.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1218.005",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: LOLBins Abuse - mshta.exe inline script. Tested via run_all_safe.ps1.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1218.011",
+      "score": 3,
+      "color": "#1f618d",
+      "comment": "Rule: LOLBins Abuse - rundll32.exe comsvcs / protocol handlers.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1003.001",
+      "score": 2,
+      "color": "#2980b9",
+      "comment": "Rule: LSASS Memory Access (Sysmon Event ID 10). Production rule; requires Sysmon ProcessAccess.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1003.006",
+      "score": 2,
+      "color": "#2980b9",
+      "comment": "Rule: DCSync / Directory Services Replication Abuse (4662). Requires AD Domain Controller with SACL.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1558.003",
+      "score": 2,
+      "color": "#2980b9",
+      "comment": "Rule: Kerberoasting (4769). Requires AD Domain Controller with SPN auditing.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1078.004",
+      "score": 2,
+      "color": "#2980b9",
+      "comment": "Rule: Entra ID Risky Sign-in. Requires Entra ID P2 license.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1098.003",
+      "score": 2,
+      "color": "#2980b9",
+      "comment": "Rule: Azure Activity - Privileged Role Assignment. Requires AzureActivity connector.",
+      "enabled": true
+    },
+    {
+      "techniqueID": "T1556.006",
+      "score": 2,
+      "color": "#2980b9",
+      "comment": "Rule: Entra ID - MFA Disabled or Strong Auth Method Removed. Requires Entra AuditLogs.",
+      "enabled": true
+    }
+  ],
+  "gradient": {
+    "colors": [
+      "#ffffff",
+      "#85c1e9",
+      "#2980b9",
+      "#1f618d"
+    ],
+    "minValue": 0,
+    "maxValue": 3
+  },
+  "legendItems": [
+    {
+      "label": "Implemented Scheduled Rule (Enterprise / AD / Cloud Prerequisites)",
+      "color": "#2980b9"
+    },
+    {
+      "label": "Verified with Lab Simulation Harness (run_all_safe.ps1)",
+      "color": "#1f618d"
+    }
+  ]
+}

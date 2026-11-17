@@ -1,0 +1,68 @@
+id: 55ebf386-38c3-4829-9c95-b4815349f6cd
+name: Suspicious Service Installed (7045)
+description: |
+  Detects the installation of a new Windows service (System Event ID 7045) executing from suspicious directories
+  (Temp, AppData, Users\Public), UNC admin shares, or invoking command interpreters (PsExec, cmd.exe, %COMSPEC%, PowerShell).
+  Adversaries install services for persistence (T1543.003) and remote lateral movement execution (T1569.002).
+kind: Scheduled
+version: 1.0.0
+severity: Medium
+status: Available
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - Event
+queryFrequency: PT15M
+queryPeriod: PT30M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - Persistence
+  - PrivilegeEscalation
+  - Execution
+relevantTechniques:
+  - T1543.003
+  - T1569.002
+query: |
+  // Lookback window provides 15m overlap with PT15M frequency
+  let lookback = 30m;
+  Event
+  | where TimeGenerated >= ago(lookback)
+  | where EventLog == "System" and EventID == 7045
+  | extend ServiceName = extract(@'<Data Name="ServiceName">(.*?)</Data>', 1, EventData),
+           ImagePath = extract(@'<Data Name="ImagePath">(.*?)</Data>', 1, EventData),
+           ServiceType = extract(@'<Data Name="ServiceType">(.*?)</Data>', 1, EventData),
+           StartType = extract(@'<Data Name="StartType">(.*?)</Data>', 1, EventData),
+           ServiceAccount = extract(@'<Data Name="AccountName">(.*?)</Data>', 1, EventData)
+  | where ImagePath matches regex @"(?i)(\\(appdata|temp|perflogs)\\|\\users\\public\\|^\\\\|admin\$|%comspec%|psexesvc)"
+       or ImagePath has_any ("powershell", "pwsh", "mshta.exe", "rundll32.exe", "certutil.exe")
+  | extend ActorDomain = tostring(split(ServiceAccount, @"\")[0]),
+           ActorName = tostring(split(ServiceAccount, @"\")[ -1])
+  | project
+      TimeGenerated,
+      Computer,
+      ServiceName,
+      ImagePath,
+      ServiceType,
+      StartType,
+      ServiceAccount,
+      ActorName,
+      ActorDomain
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: Computer
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: ActorName
+      - identifier: NTDomain
+        columnName: ActorDomain
+customDetails:
+  InstalledServiceName: ServiceName
+  ServiceBinaryPath: ImagePath
+  ServiceRunAccount: ServiceAccount
+falsePositives: |
+  Legitimate third-party software installers or driver updates executing temporary helpers from Temp/AppData.
+  Baseline approved enterprise service names and paths.

@@ -1,0 +1,65 @@
+id: af2382e0-2d78-4755-8702-2489b06570ff
+name: Encoded PowerShell Command Line (-enc / FromBase64String)
+description: |
+  Detects the execution of PowerShell with base64-encoded command parameters (e.g., -enc, -encodedcommand,
+  or FromBase64String) using regex to catch dash variants and parameter abbreviations.
+  Prerequisite: Requires Windows GPO 'Include command line in process creation events' enabled for Event ID 4688.
+kind: Scheduled
+version: 1.0.0
+severity: Medium
+status: Available
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - SecurityEvent
+queryFrequency: PT15M
+queryPeriod: PT30M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - Execution
+  - DefenseEvasion
+relevantTechniques:
+  - T1059.001
+  - T1027
+query: |
+  // Lookback window provides 15m overlap with PT15M frequency
+  let lookback = 30m;
+  SecurityEvent
+  | where TimeGenerated >= ago(lookback)
+  | where EventID == 4688 and isnotempty(CommandLine)
+  | extend ProcessBase = tostring(split(Process, @"\")[ -1])
+  | where ProcessBase in~ ("powershell.exe", "pwsh.exe")
+  | where CommandLine matches regex @"(?i)\s[-/–—]e(c|n[a-z]*)?\s+[A-Za-z0-9+/=]{20,}"
+       or CommandLine contains "frombase64string"
+  | project
+      TimeGenerated,
+      Computer,
+      SubjectUserName,
+      SubjectDomainName,
+      Process,
+      CommandLine,
+      ParentProcessName
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: Computer
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: SubjectUserName
+      - identifier: NTDomain
+        columnName: SubjectDomainName
+  - entityType: Process
+    fieldMappings:
+      - identifier: CommandLine
+        columnName: CommandLine
+customDetails:
+  ProcessName: Process
+  ParentProcess: ParentProcessName
+  FullCommand: CommandLine
+falsePositives: |
+  Legitimate administrative scripts, SCCM/Intune packaging tools, or automated enterprise backup software.
+  Baseline known parent processes and signed admin scripts.
+  Prerequisite: Requires 'Include command line in process creation events' enabled in Windows Audit Policy.

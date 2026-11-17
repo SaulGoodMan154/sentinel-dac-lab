@@ -1,0 +1,224 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the target Log Analytics Workspace hosting Microsoft Sentinel."
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/e13bd6dd-7bc4-475a-a9c7-85df7ca9bad0')]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "LSASS Memory Access - Sysmon Event ID 10",
+        "description": "Detects non-standard processes opening handles to the Local Security Authority Subsystem Service (lsass.exe)\nmemory space with rights indicative of credential dumping (e.g., Mimikatz, ProcDump, Dumpert, or TaskMgr).\nMonitors Sysmon Event ID 10 (ProcessAccess) filtered against legitimate security engines.\n",
+        "severity": "High",
+        "enabled": true,
+        "query": "// Lookback window provides 15m overlap with PT15M frequency to prevent ingestion lag drops\nlet lookback = 30m;\nEvent\n| where TimeGenerated >= ago(lookback)\n| where Source == \"Microsoft-Windows-Sysmon\" and EventID == 10\n| parse EventData with * '<Data Name=\"SourceImage\">' SourceImage '</Data>' *\n                        '<Data Name=\"TargetImage\">' TargetImage '</Data>' *\n                        '<Data Name=\"GrantedAccess\">' GrantedAccess '</Data>' *\n                        '<Data Name=\"CallTrace\">' CallTrace '</Data>' *\n| where TargetImage endswith @\"\\lsass.exe\"\n| where not(SourceImage startswith @\"C:\\Program Files\\Windows Defender\\\"\n            or SourceImage startswith @\"C:\\ProgramData\\Microsoft\\Windows Defender\\\"\n            or SourceImage startswith @\"C:\\Program Files\\Microsoft Defender\\\")\n| where GrantedAccess in~ (\"0x1010\", \"0x1410\", \"0x1438\", \"0x143a\", \"0x1fffff\", \"0x1f3fff\")\n| extend SourceUser = extract('<Data Name=\"SourceUser\">(.*?)</Data>', 1, EventData)\n| extend EffectiveUser = iff(isempty(SourceUser), UserName, SourceUser)\n| extend ActorDomain = tostring(split(EffectiveUser, @\"\\\")[0]),\n         ActorName = tostring(split(EffectiveUser, @\"\\\")[ -1])\n| project\n    TimeGenerated,\n    Computer,\n    SourceImage,\n    TargetImage,\n    GrantedAccess,\n    CallTrace,\n    ActorName,\n    ActorDomain",
+        "queryFrequency": "PT15M",
+        "queryPeriod": "PT30M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "tactics": [
+          "CredentialAccess"
+        ],
+        "techniques": [
+          "T1003"
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": false,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities",
+            "groupByEntities": [],
+            "groupByAlertDetails": [],
+            "groupByCustomDetails": []
+          }
+        },
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "eventGroupingSettings": {
+          "aggregationKind": "SingleAlert"
+        },
+        "entityMappings": [
+          {
+            "entityType": "Host",
+            "fieldMappings": [
+              {
+                "identifier": "HostName",
+                "columnName": "Computer"
+              }
+            ]
+          },
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "identifier": "Name",
+                "columnName": "ActorName"
+              },
+              {
+                "identifier": "NTDomain",
+                "columnName": "ActorDomain"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "SourceProcess": "SourceImage",
+          "RequestedAccessMask": "GrantedAccess",
+          "TargetProcess": "TargetImage"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/5e2e9b8c-a74c-4b1a-a639-3f9eeff6aa67')]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Mass File Deletion - Potential Ransomware or Wiper Activity",
+        "description": "Detects an unusually rapid burst of file deletion operations initiated by a user-space process.\nThis burst activity is characteristic of ransomware wiping shadow copies and original files, or wiper malware\ncausing data destruction (T1485). Monitors Sysmon Event IDs 23 (FileDelete) and 26 (FileDeleteDetected).\n",
+        "severity": "High",
+        "enabled": true,
+        "query": "// Lab threshold set to 30; baseline and raise to 100+ for production workstations\nlet threshold = 30;\nlet lookback = 15m;\nlet benignPaths = dynamic([\n    @\"C:\\Windows\\System32\\cleanmgr.exe\",\n    @\"C:\\Windows\\System32\\msiexec.exe\",\n    @\"C:\\Windows\\System32\\TiWorker.exe\",\n    @\"C:\\Windows\\servicing\\TrustedInstaller.exe\"\n]);\nEvent\n| where TimeGenerated >= ago(lookback)\n| where Source == \"Microsoft-Windows-Sysmon\" and EventID in (23, 26)\n| parse EventData with * '<Data Name=\"User\">' ExecutingUser '</Data>' *\n                        '<Data Name=\"Image\">' InitiatingProcess '</Data>' *\n                        '<Data Name=\"TargetFilename\">' TargetFile '</Data>' *\n| where not(InitiatingProcess in~ (benignPaths))\n| summarize\n    DeletedFilesCount = count(),\n    SampleFiles = make_set(TargetFile, 10),\n    StartTime = min(TimeGenerated),\n    EndTime = max(TimeGenerated)\n    by Computer, InitiatingProcess, ExecutingUser\n| where DeletedFilesCount >= threshold\n| extend ActorDomain = tostring(split(ExecutingUser, @\"\\\")[0]),\n         ActorName = tostring(split(ExecutingUser, @\"\\\")[ -1]),\n         SampleFilesStr = tostring(SampleFiles)\n| project\n    StartTime,\n    EndTime,\n    Computer,\n    InitiatingProcess,\n    ActorName,\n    ActorDomain,\n    DeletedFilesCount,\n    SampleFiles,\n    SampleFilesStr",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT15M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "tactics": [
+          "Impact"
+        ],
+        "techniques": [
+          "T1485"
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": false,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities",
+            "groupByEntities": [],
+            "groupByAlertDetails": [],
+            "groupByCustomDetails": []
+          }
+        },
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "eventGroupingSettings": {
+          "aggregationKind": "SingleAlert"
+        },
+        "entityMappings": [
+          {
+            "entityType": "Host",
+            "fieldMappings": [
+              {
+                "identifier": "HostName",
+                "columnName": "Computer"
+              }
+            ]
+          },
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "identifier": "Name",
+                "columnName": "ActorName"
+              },
+              {
+                "identifier": "NTDomain",
+                "columnName": "ActorDomain"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "TotalDeletedFiles": "DeletedFilesCount",
+          "TriggeringProcess": "InitiatingProcess",
+          "SampleFilesList": "SampleFilesStr"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/55ebf386-38c3-4829-9c95-b4815349f6cd')]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Suspicious Service Installed (7045)",
+        "description": "Detects the installation of a new Windows service (System Event ID 7045) executing from suspicious directories\n(Temp, AppData, Users\\Public), UNC admin shares, or invoking command interpreters (PsExec, cmd.exe, %COMSPEC%, PowerShell).\nAdversaries install services for persistence (T1543.003) and remote lateral movement execution (T1569.002).\n",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "// Lookback window provides 15m overlap with PT15M frequency\nlet lookback = 30m;\nEvent\n| where TimeGenerated >= ago(lookback)\n| where EventLog == \"System\" and EventID == 7045\n| extend ServiceName = extract(@'<Data Name=\"ServiceName\">(.*?)</Data>', 1, EventData),\n         ImagePath = extract(@'<Data Name=\"ImagePath\">(.*?)</Data>', 1, EventData),\n         ServiceType = extract(@'<Data Name=\"ServiceType\">(.*?)</Data>', 1, EventData),\n         StartType = extract(@'<Data Name=\"StartType\">(.*?)</Data>', 1, EventData),\n         ServiceAccount = extract(@'<Data Name=\"AccountName\">(.*?)</Data>', 1, EventData)\n| where ImagePath matches regex @\"(?i)(\\\\(appdata|temp|perflogs)\\\\|\\\\users\\\\public\\\\|^\\\\\\\\|admin\\$|%comspec%|psexesvc)\"\n     or ImagePath has_any (\"powershell\", \"pwsh\", \"mshta.exe\", \"rundll32.exe\", \"certutil.exe\")\n| extend ActorDomain = tostring(split(ServiceAccount, @\"\\\")[0]),\n         ActorName = tostring(split(ServiceAccount, @\"\\\")[ -1])\n| project\n    TimeGenerated,\n    Computer,\n    ServiceName,\n    ImagePath,\n    ServiceType,\n    StartType,\n    ServiceAccount,\n    ActorName,\n    ActorDomain",
+        "queryFrequency": "PT15M",
+        "queryPeriod": "PT30M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "tactics": [
+          "Persistence",
+          "PrivilegeEscalation",
+          "Execution"
+        ],
+        "techniques": [
+          "T1543",
+          "T1569"
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": false,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities",
+            "groupByEntities": [],
+            "groupByAlertDetails": [],
+            "groupByCustomDetails": []
+          }
+        },
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "eventGroupingSettings": {
+          "aggregationKind": "SingleAlert"
+        },
+        "entityMappings": [
+          {
+            "entityType": "Host",
+            "fieldMappings": [
+              {
+                "identifier": "HostName",
+                "columnName": "Computer"
+              }
+            ]
+          },
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "identifier": "Name",
+                "columnName": "ActorName"
+              },
+              {
+                "identifier": "NTDomain",
+                "columnName": "ActorDomain"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "InstalledServiceName": "ServiceName",
+          "ServiceBinaryPath": "ImagePath",
+          "ServiceRunAccount": "ServiceAccount"
+        }
+      }
+    }
+  ]
+}

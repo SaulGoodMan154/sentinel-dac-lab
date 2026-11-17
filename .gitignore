@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test artifacts
+*.dmp
+*.log
+
+# Private documentation & chronicles
+details.md
+sentinel-dac-lab_corrections.md
+

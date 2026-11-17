@@ -1,0 +1,84 @@
+id: 6310935d-ad5d-4c90-bc6f-6a7b84849899
+name: DCSync / Directory Services Replication Abuse
+description: |
+  Detects non-machine accounts executing Directory Service replication operations (Event ID 4662)
+  requesting both DS-Replication-Get-Changes and DS-Replication-Get-Changes-All extended rights.
+  Adversaries use tools like Mimikatz (lsadump::dcsync) or Impacket secretsdump to extract domain password hashes.
+  Prerequisite: Requires an Active Directory Domain Controller with 'Audit Directory Service Access' enabled and a root domain SACL.
+kind: Scheduled
+version: 1.0.0
+severity: High
+status: Available
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - SecurityEvent
+queryFrequency: PT15M
+queryPeriod: PT30M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - CredentialAccess
+relevantTechniques:
+  - T1003.006
+query: |
+  // Single-pass correlation of 4662 (DCSync) and 4624 (Network Logon) avoids self-join overhead
+  let lookback = 30m;
+  let g1 = "1131f6aa-9c07-11d1-f79f-00c04fc2dcd2"; // DS-Replication-Get-Changes
+  let g2 = "1131f6ad-9c07-11d1-f79f-00c04fc2dcd2"; // DS-Replication-Get-Changes-All
+  SecurityEvent
+  | where TimeGenerated >= ago(lookback)
+  | where (EventID == 4662 and ObjectServer == "DS" and AccessMask == "0x100"
+           and SubjectUserName !endswith "$"
+           and not(SubjectUserName startswith "MSOL_")
+           and not(SubjectUserName startswith "AAD_")
+           and Properties has_any (g1, g2))
+       or (EventID == 4624 and LogonType == 3)
+  | extend LogonId = iff(EventID == 4662, SubjectLogonId, TargetLogonId),
+           CleanIP = replace_string(IpAddress, "::ffff:", "")
+  | summarize
+      GetChanges = countif(EventID == 4662 and Properties has g1),
+      GetChangesAll = countif(EventID == 4662 and Properties has g2),
+      SubjectUserName = take_anyif(SubjectUserName, EventID == 4662),
+      SubjectDomainName = take_anyif(SubjectDomainName, EventID == 4662),
+      SourceIP = take_anyif(CleanIP, EventID == 4624 and CleanIP !in ("", "-")),
+      SourceHost = take_anyif(WorkstationName, EventID == 4624 and WorkstationName !in ("", "-")),
+      StartTime = min(TimeGenerated),
+      EndTime = max(TimeGenerated)
+      by LogonId, DC = Computer
+  | where GetChanges > 0 and GetChangesAll > 0
+  | extend SourceHostClean = iff(isempty(SourceHost) or SourceHost == "-", DC, SourceHost)
+  | project
+      StartTime,
+      EndTime,
+      DC,
+      SubjectUserName,
+      SubjectDomainName,
+      SubjectLogonId = LogonId,
+      SourceIP,
+      SourceHostClean,
+      GetChanges,
+      GetChangesAll
+entityMappings:
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: SubjectUserName
+      - identifier: NTDomain
+        columnName: SubjectDomainName
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: SourceHostClean
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: SourceIP
+customDetails:
+  ReplicationActor: SubjectUserName
+  TargetDC: DC
+  ChangesCount: GetChanges
+falsePositives: |
+  Legitimate domain controller synchronization uses machine accounts (ending with $).
+  Entra Connect synchronization accounts (MSOL_*) legitimately request these rights and are allowlisted.
+  Prerequisite: Requires an Active Directory Domain Controller with 'Audit Directory Service Access' enabled and a root domain SACL.

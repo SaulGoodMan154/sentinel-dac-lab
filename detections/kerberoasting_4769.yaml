@@ -1,0 +1,86 @@
+id: c3d95deb-12bf-464b-882a-94c48239e02a
+name: Kerberoasting - TGS Request with RC4 Encryption (4769)
+description: |
+  Detects suspicious Kerberos Ticket Granting Service (TGS) ticket requests (Event ID 4769) utilizing
+  weak RC4 encryption (0x17, 0x18) across multiple distinct Service Principal Names (SPNs).
+  Adversaries request tickets for Active Directory SPNs using RC4 to crack service account passwords offline (T1558.003).
+  Prerequisite: Requires an Active Directory Domain Controller with 'Audit Kerberos Service Ticket Operations' enabled.
+kind: Scheduled
+version: 1.0.0
+severity: High
+status: Available
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - SecurityEvent
+queryFrequency: PT15M
+queryPeriod: PT30M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - CredentialAccess
+relevantTechniques:
+  - T1558.003
+query: |
+  // Lookback window provides 15m overlap with PT15M frequency
+  let lookback = 30m;
+  // Lab threshold: 3 distinct SPNs; baseline and tune for enterprise service account traffic
+  let distinctSpnThreshold = 3;
+  SecurityEvent
+  | where TimeGenerated >= ago(lookback)
+  | where EventID == 4769
+  | extend EventDataStr = tostring(EventData)
+  | extend TicketEncryptionType = tostring(column_ifexists("TicketEncryptionType", "")),
+           ServiceName = tostring(column_ifexists("ServiceName", "")),
+           Status = tostring(column_ifexists("Status", ""))
+  | extend TicketEncryptionType = iff(isempty(TicketEncryptionType), extract('<Data Name="TicketEncryptionType">(.*?)</Data>', 1, EventDataStr), TicketEncryptionType),
+           ServiceName = iff(isempty(ServiceName), extract('<Data Name="ServiceName">(.*?)</Data>', 1, EventDataStr), ServiceName),
+           Status = iff(isempty(Status), extract('<Data Name="Status">(.*?)</Data>', 1, EventDataStr), Status)
+  | where Status == "0x0"
+  | where TicketEncryptionType in ("0x17", "0x18") // RC4-HMAC and RC4-EXP
+  | where ServiceName !endswith "$" and ServiceName !in~ ("krbtgt", "kadmin/changepw")
+  | where TargetUserName !has "$@" and TargetUserName !endswith "$"
+  | extend ClientIP = replace_string(IpAddress, "::ffff:", "")
+  | where ClientIP !in ("", "-", "::1", "127.0.0.1")
+  | summarize
+      RequestCount = count(),
+      DistinctSPNs = dcount(ServiceName),
+      RequestedServices = make_set(ServiceName, 20),
+      TargetDCs = make_set(Computer, 5),
+      StartTime = min(TimeGenerated),
+      EndTime = max(TimeGenerated)
+      by TargetUserName, ClientIP
+  | where DistinctSPNs >= distinctSpnThreshold
+  | extend AccountName = tostring(split(TargetUserName, "@")[0]),
+           UPNSuffix = tostring(split(TargetUserName, "@")[1]),
+           RequestedServicesStr = tostring(RequestedServices)
+  | project
+      StartTime,
+      EndTime,
+      TargetUserName,
+      AccountName,
+      UPNSuffix,
+      ClientIP,
+      RequestCount,
+      DistinctSPNs,
+      RequestedServices,
+      RequestedServicesStr
+entityMappings:
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: AccountName
+      - identifier: UPNSuffix
+        columnName: UPNSuffix
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: ClientIP
+customDetails:
+  TotalTgsRequests: RequestCount
+  DistinctSPNsCount: DistinctSPNs
+  TargetSPNs: RequestedServicesStr
+falsePositives: |
+  Legacy line-of-business applications or legacy service accounts not yet configured to enforce AES Kerberos encryption.
+  Audit SPN encryption attributes to remediate RC4 usage at the directory level.
+  Prerequisite: Requires an Active Directory Domain Controller with 'Audit Kerberos Service Ticket Operations' enabled.

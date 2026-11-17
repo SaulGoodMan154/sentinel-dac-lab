@@ -1,0 +1,68 @@
+id: e13bd6dd-7bc4-475a-a9c7-85df7ca9bad0
+name: LSASS Memory Access - Sysmon Event ID 10
+description: |
+  Detects non-standard processes opening handles to the Local Security Authority Subsystem Service (lsass.exe)
+  memory space with rights indicative of credential dumping (e.g., Mimikatz, ProcDump, Dumpert, or TaskMgr).
+  Monitors Sysmon Event ID 10 (ProcessAccess) filtered against legitimate security engines.
+kind: Scheduled
+version: 1.0.0
+severity: High
+status: Available
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - Event
+queryFrequency: PT15M
+queryPeriod: PT30M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - CredentialAccess
+relevantTechniques:
+  - T1003.001
+query: |
+  // Lookback window provides 15m overlap with PT15M frequency to prevent ingestion lag drops
+  let lookback = 30m;
+  Event
+  | where TimeGenerated >= ago(lookback)
+  | where Source == "Microsoft-Windows-Sysmon" and EventID == 10
+  | parse EventData with * '<Data Name="SourceImage">' SourceImage '</Data>' *
+                          '<Data Name="TargetImage">' TargetImage '</Data>' *
+                          '<Data Name="GrantedAccess">' GrantedAccess '</Data>' *
+                          '<Data Name="CallTrace">' CallTrace '</Data>' *
+  | where TargetImage endswith @"\lsass.exe"
+  | where not(SourceImage startswith @"C:\Program Files\Windows Defender\"
+              or SourceImage startswith @"C:\ProgramData\Microsoft\Windows Defender\"
+              or SourceImage startswith @"C:\Program Files\Microsoft Defender\")
+  | where GrantedAccess in~ ("0x1010", "0x1410", "0x1438", "0x143a", "0x1fffff", "0x1f3fff")
+  | extend SourceUser = extract('<Data Name="SourceUser">(.*?)</Data>', 1, EventData)
+  | extend EffectiveUser = iff(isempty(SourceUser), UserName, SourceUser)
+  | extend ActorDomain = tostring(split(EffectiveUser, @"\")[0]),
+           ActorName = tostring(split(EffectiveUser, @"\")[ -1])
+  | project
+      TimeGenerated,
+      Computer,
+      SourceImage,
+      TargetImage,
+      GrantedAccess,
+      CallTrace,
+      ActorName,
+      ActorDomain
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: Computer
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: ActorName
+      - identifier: NTDomain
+        columnName: ActorDomain
+customDetails:
+  SourceProcess: SourceImage
+  RequestedAccessMask: GrantedAccess
+  TargetProcess: TargetImage
+falsePositives: |
+  Third-party Endpoint Detection and Response (EDR), Antivirus scanners, or monitoring agents
+  (e.g., CrowdStrike, Carbon Black, Qualys) inspecting security memory. Allowlist known signed security binaries.

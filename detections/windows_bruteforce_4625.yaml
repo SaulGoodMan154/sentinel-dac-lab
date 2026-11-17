@@ -1,0 +1,75 @@
+id: cb4e1a98-7e37-4fb1-811d-de810fc49cca
+name: Windows Brute Force - Multiple Failed Logons (4625)
+description: |
+  Detects an abnormal spike of failed logon attempts (Windows Security Event ID 4625) targeting
+  the same user account from a single source within a lookback window. Filters out batch (4) and service (5)
+  logons to eliminate noise from stale scheduled tasks and service account credentials.
+kind: Scheduled
+version: 1.0.0
+severity: Medium
+status: Available
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - SecurityEvent
+queryFrequency: PT15M
+queryPeriod: PT30M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - CredentialAccess
+relevantTechniques:
+  - T1110.001
+query: |
+  // Lookback window provides 15m overlap with PT15M frequency
+  let lookback = 30m;
+  // Lab threshold: 5 failed attempts; baseline to 10+ for external RDP or multi-tier enterprise servers
+  let threshold = 5;
+  SecurityEvent
+  | where TimeGenerated >= ago(lookback)
+  | where EventID == 4625
+  | where LogonType !in (4, 5) // Exclude batch (4) and service (5) logon failures
+  | where TargetUserName !endswith "$"
+  | extend RawIP = iff(IpAddress in ("", "-"), WorkstationName, IpAddress)
+  | extend SourceIP = replace_string(RawIP, "::ffff:", "")
+  | where SourceIP !in ("", "-", "127.0.0.1", "::1", "Unknown")
+  | summarize
+      FailedAttempts = count(),
+      StartTime = min(TimeGenerated),
+      EndTime = max(TimeGenerated),
+      LogonTypes = make_set(LogonType),
+      SubStatusReasons = make_set(SubStatus)
+      by TargetUserName, TargetDomainName, SourceIP, Computer
+  | where FailedAttempts >= threshold
+  | project
+      StartTime,
+      EndTime,
+      TargetUserName,
+      TargetDomainName,
+      SourceIP,
+      Computer,
+      FailedAttempts,
+      LogonTypes,
+      SubStatusReasons
+entityMappings:
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: TargetUserName
+      - identifier: NTDomain
+        columnName: TargetDomainName
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: Computer
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: SourceIP
+customDetails:
+  FailedAttemptCount: FailedAttempts
+  TargetUser: TargetUserName
+  OriginHostOrIP: SourceIP
+falsePositives: |
+  Users who mistyped passwords or recently changed passwords with cached credentials on mapped drives.
+  Internal vulnerability scanners or compliance monitoring tools. Allowlist known vulnerability scanner IPs.

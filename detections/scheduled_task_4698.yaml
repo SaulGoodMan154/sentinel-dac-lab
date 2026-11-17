@@ -1,0 +1,63 @@
+id: 7cc3a5ee-0c9e-4f4c-918b-4df0f9d6aed4
+name: Suspicious Scheduled Task Created (4698)
+description: |
+  Detects the creation of a new Windows scheduled task (Event ID 4698) where the executed command or arguments
+  reference suspicious directory paths (e.g., AppData, Temp, Users\Public) or scripting engines.
+  Prerequisite: Requires advanced audit policy 'Audit Other Object Access Events' enabled in Windows GPO.
+kind: Scheduled
+version: 1.0.0
+severity: Medium
+status: Available
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - SecurityEvent
+queryFrequency: PT15M
+queryPeriod: PT30M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - Persistence
+  - Execution
+relevantTechniques:
+  - T1053.005
+query: |
+  // Lookback window provides 15m overlap with PT15M frequency
+  let lookback = 30m;
+  SecurityEvent
+  | where TimeGenerated >= ago(lookback)
+  | where EventID == 4698
+  | extend TaskName = extract(@'<Data Name="TaskName">(.*?)</Data>', 1, EventData),
+           TaskContent = extract(@'<Data Name="TaskContent">(.*?)</Data>', 1, EventData)
+  | extend Command = extract(@'&lt;Command&gt;(.*?)&lt;/Command&gt;', 1, TaskContent),
+           Arguments = extract(@'&lt;Arguments&gt;(.*?)&lt;/Arguments&gt;', 1, TaskContent)
+  | extend FullExecution = strcat(Command, " ", Arguments)
+  | where FullExecution matches regex @"(?i)(\\(appdata|temp|perflogs)\\|\\users\\public\\)"
+       or Command matches regex @"(?i)(powershell|pwsh|cmd|wscript|cscript|mshta|rundll32|certutil|bitsadmin)\.exe"
+  | project
+      TimeGenerated,
+      Computer,
+      SubjectUserName,
+      SubjectDomainName,
+      TaskName,
+      Command,
+      Arguments,
+      FullExecution
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: Computer
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: SubjectUserName
+      - identifier: NTDomain
+        columnName: SubjectDomainName
+customDetails:
+  CreatedTaskName: TaskName
+  ExecutedCommand: Command
+falsePositives: |
+  Legitimate software updaters (e.g. Google Update, Adobe Update) or enterprise endpoint management tools.
+  Filter known enterprise updater paths and scheduled tasks signed by trusted vendors.
+  Prerequisite: Requires 'Audit Other Object Access Events' enabled in Windows Audit Policy.

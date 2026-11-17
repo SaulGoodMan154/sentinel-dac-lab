@@ -1,0 +1,39 @@
+name: Validate Detections CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate-and-build:
+    name: Lint Detections & Build ARM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Run Sentinel Detection Linter
+        run: |
+          python scripts/validate_local.py
+
+      - name: Compile YAML rules to ARM Template
+        run: |
+          python scripts/yaml_to_arm.py
+
+      - name: Check for uncommitted ARM changes
+        run: |
+          git diff --exit-code deploy/alertRules.arm.json || (echo "ARM template is out of sync with detections. Run 'python scripts/yaml_to_arm.py' and commit." && exit 1)
+

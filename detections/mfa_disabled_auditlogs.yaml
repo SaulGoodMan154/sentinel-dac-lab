@@ -1,0 +1,83 @@
+id: dd4b30bb-c8d5-438c-abd4-011f5a5ddba0
+name: Entra ID - MFA Disabled or Strong Auth Method Removed
+description: |
+  Detects when Multi-Factor Authentication (MFA) is disabled or strong authentication methods (FIDO2 keys,
+  Authenticator apps, phone methods) are removed for a user in Entra ID (AuditLogs).
+  Focuses on administrative resets and deletions to identify persistent access setup by compromised administrators (T1556.006).
+kind: Scheduled
+version: 1.0.0
+severity: High
+status: Available
+requiredDataConnectors:
+  - connectorId: AzureActiveDirectory
+    dataTypes:
+      - AuditLogs
+queryFrequency: PT1H
+queryPeriod: PT2H
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - Persistence
+  - DefenseEvasion
+relevantTechniques:
+  - T1556.006
+query: |
+  // Lookback window provides 1h overlap with PT1H frequency for cloud audit log latency
+  let lookback = 2h;
+  let sensitiveOperations = dynamic([
+      "Delete strong authentication method",
+      "Disable Strong Authentication",
+      "Admin deleted security info",
+      "Delete authentication method"
+  ]);
+  AuditLogs
+  | where TimeGenerated >= ago(lookback)
+  | where Result =~ "success"
+  | where OperationName in~ (sensitiveOperations)
+  | extend ActorUser = tostring(InitiatedBy.user.userPrincipalName),
+           ActorApp  = tostring(InitiatedBy.app.displayName),
+           ActorIP   = tostring(InitiatedBy.user.ipAddress)
+  | extend Actor = coalesce(ActorUser, ActorApp)
+  | mv-expand tr = TargetResources
+  | where tostring(tr.type) =~ "User"
+  | extend TargetUser = tostring(tr.userPrincipalName)
+  | extend TargetUserName = tostring(split(TargetUser, "@")[0]),
+           TargetUPNSuffix = tostring(split(TargetUser, "@")[1]),
+           ActorName = tostring(split(ActorUser, "@")[0]),
+           ActorUPNSuffix = tostring(split(ActorUser, "@")[1])
+  | project
+      TimeGenerated,
+      OperationName,
+      Actor,
+      ActorName,
+      ActorUPNSuffix,
+      ActorIP,
+      TargetUser,
+      TargetUserName,
+      TargetUPNSuffix,
+      ResultReason,
+      Category
+entityMappings:
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: TargetUserName
+      - identifier: UPNSuffix
+        columnName: TargetUPNSuffix
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: ActorName
+      - identifier: UPNSuffix
+        columnName: ActorUPNSuffix
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: ActorIP
+customDetails:
+  ModifiedUser: TargetUser
+  AuthOperation: OperationName
+  InitiatingAdmin: Actor
+falsePositives: |
+  Authorized IT helpdesk administrator performing a documented user MFA reset.
+  Verify with internal helpdesk tickets and change management approvals.

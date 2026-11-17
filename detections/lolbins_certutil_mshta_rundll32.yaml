@@ -1,0 +1,68 @@
+id: a958a79e-127f-4c40-9149-6189dc7ab6a2
+name: LOLBins Abuse - certutil / mshta / rundll32
+description: |
+  Detects the abuse of Living-off-the-Land Binaries (LOLBins) including certutil.exe (remote file download/decoding),
+  mshta.exe (inline script or remote HTA execution), and rundll32.exe (comsvcs minidump or URL protocol execution).
+  Prerequisite: Requires Windows GPO 'Include command line in process creation events' enabled for Event ID 4688.
+kind: Scheduled
+version: 1.0.0
+severity: Medium
+status: Available
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - SecurityEvent
+queryFrequency: PT15M
+queryPeriod: PT30M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - DefenseEvasion
+  - CommandAndControl
+relevantTechniques:
+  - T1105
+  - T1218.005
+  - T1218.011
+query: |
+  // Lookback window provides 15m overlap with PT15M frequency
+  let lookback = 30m;
+  SecurityEvent
+  | where TimeGenerated >= ago(lookback)
+  | where EventID == 4688 and isnotempty(CommandLine)
+  | extend Bin = tolower(tostring(split(Process, @"\")[ -1])),
+           Cmd = tolower(CommandLine)
+  | where (Bin =~ "certutil.exe" and Cmd matches regex @"[-/](urlcache|verifyctl|decode|decodehex)")
+       or (Bin =~ "mshta.exe" and Cmd has_any ("http://", "https://", "javascript:", "vbscript:", ".hta"))
+       or (Bin =~ "rundll32.exe" and (Cmd has_any ("javascript:", "url.dll,fileprotocolhandler")
+                                      or (Cmd has "comsvcs" and Cmd has "minidump")))
+  | project
+      TimeGenerated,
+      Computer,
+      SubjectUserName,
+      SubjectDomainName,
+      Process,
+      CommandLine,
+      ParentProcessName
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: Computer
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: SubjectUserName
+      - identifier: NTDomain
+        columnName: SubjectDomainName
+  - entityType: Process
+    fieldMappings:
+      - identifier: CommandLine
+        columnName: CommandLine
+customDetails:
+  SuspiciousBinary: Process
+  ExecutedCommandLine: CommandLine
+  ParentLauncher: ParentProcessName
+falsePositives: |
+  Legitimate administrative certificate maintenance via certutil; legacy enterprise client software
+  launching HTA splash screens. Inspect parent process lineage and network connections.
+  Prerequisite: Requires 'Include command line in process creation events' enabled in Windows Audit Policy.

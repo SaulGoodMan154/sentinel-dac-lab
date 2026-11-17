@@ -1,0 +1,243 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the target Log Analytics Workspace hosting Microsoft Sentinel."
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/59b66841-43a7-41f2-aa4d-d6d232a68dfe')]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Azure Activity - Privileged Role Assignment or Resource Deletion Spike",
+        "description": "Detects suspicious control plane activity in Azure, specifically the assignment of high-privilege RBAC roles\n(Owner, Contributor, User Access Administrator) or an abnormal spike in resource deletion operations (>= 5 in lookback).\nAdversaries assign privileged roles for persistence (T1098.003) and delete cloud resources for denial of service (T1485).\n",
+        "severity": "High",
+        "enabled": true,
+        "query": "// Lookback window provides 30m overlap with PT30M frequency to absorb cloud activity ingestion delays\nlet lookback = 1h;\nlet privRoles = dynamic([\n    \"8e3af657-a8ff-443c-a75c-2fe8c4bcb635\", // Owner\n    \"b24988ac-6180-42a0-ab88-20f7382dd24c\", // Contributor\n    \"18d7d88d-d35e-4fb5-a5c3-7773c20a72d9\"  // User Access Administrator\n]);\nAzureActivity\n| where TimeGenerated >= ago(lookback)\n| where ActivityStatusValue in~ (\"Success\", \"Succeeded\")\n| extend Body = parse_json(tostring(parse_json(Properties).requestbody))\n| extend RoleDefId = tostring(Body.Properties.RoleDefinitionId),\n         PrincipalId = tostring(Body.Properties.PrincipalId)\n| extend IsPrivRole = OperationNameValue =~ \"Microsoft.Authorization/roleAssignments/write\" and RoleDefId has_any (privRoles)\n| extend IsDelete = OperationNameValue endswith \"/delete\" and not(OperationNameValue has_any (\"locks\", \"diagnostics\", \"tags\"))\n| where IsPrivRole or IsDelete\n| summarize\n    PrivRoleGrants = countif(IsPrivRole),\n    DeletesCount = countif(IsDelete),\n    AssignedPrincipals = make_set(PrincipalId, 10),\n    TargetResources = make_set(Resource, 10),\n    StartTime = min(TimeGenerated),\n    EndTime = max(TimeGenerated)\n    by Caller, CallerIpAddress, SubscriptionId\n| where PrivRoleGrants > 0 or DeletesCount >= 5\n| extend CallerName = iff(Caller has \"@\", tostring(split(Caller, \"@\")[0]), Caller),\n         CallerUPNSuffix = iff(Caller has \"@\", tostring(split(Caller, \"@\")[1]), \"\"),\n         PrincipalsStr = tostring(AssignedPrincipals),\n         ResourcesStr = tostring(TargetResources)\n| project\n    StartTime,\n    EndTime,\n    Caller,\n    CallerName,\n    CallerUPNSuffix,\n    CallerIpAddress,\n    SubscriptionId,\n    PrivRoleGrants,\n    DeletesCount,\n    PrincipalsStr,\n    ResourcesStr",
+        "queryFrequency": "PT30M",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "tactics": [
+          "PrivilegeEscalation",
+          "Persistence",
+          "Impact"
+        ],
+        "techniques": [
+          "T1098",
+          "T1485"
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": false,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities",
+            "groupByEntities": [],
+            "groupByAlertDetails": [],
+            "groupByCustomDetails": []
+          }
+        },
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "eventGroupingSettings": {
+          "aggregationKind": "SingleAlert"
+        },
+        "entityMappings": [
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "identifier": "Name",
+                "columnName": "CallerName"
+              },
+              {
+                "identifier": "UPNSuffix",
+                "columnName": "CallerUPNSuffix"
+              }
+            ]
+          },
+          {
+            "entityType": "IP",
+            "fieldMappings": [
+              {
+                "identifier": "Address",
+                "columnName": "CallerIpAddress"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "PrivRoleGrants": "PrivRoleGrants",
+          "DeletesCount": "DeletesCount",
+          "AssignedUsers": "PrincipalsStr"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/7f7645b2-fec7-4a65-a4e1-bf768d2e392f')]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Entra ID Risky Sign-in - Identity Protection Signal or Anomalous Travel",
+        "description": "Detects anomalous Entra ID (Azure AD) sign-ins flagged with elevated risk levels or suspicious signals\n(unlikely travel, anomalous token, unfamiliar features, anonymized IP) in SigninLogs.\nPrerequisite: Requires Microsoft Entra ID P2 license for Identity Protection risk event population.\n",
+        "severity": "High",
+        "enabled": true,
+        "query": "// Overlapping 2h lookback with 1h frequency ensures late-arriving cloud audit logs are ingested\nlet lookback = 2h;\nSigninLogs\n| where TimeGenerated >= ago(lookback)\n| where ResultType == 0\n| extend CleanIP = replace_string(IPAddress, \"::ffff:\", \"\")\n| extend City = tostring(LocationDetails.city),\n         Country = tostring(LocationDetails.countryOrRegion)\n| extend RiskEventTypes = tostring(RiskEventTypes_V2),\n         RiskLevel = tostring(RiskLevelDuringSignIn)\n| where RiskLevel in (\"high\", \"medium\") or RiskEventTypes has_any (\"unlikelyTravel\", \"anonymizedIPAddress\", \"maliciousIPAddress\", \"unfamiliarFeatures\", \"suspiciousBrowser\")\n| summarize\n    SignInCount = count(),\n    DistinctLocations = make_set(strcat(City, \", \", Country), 10),\n    DistinctIPs = make_set(CleanIP, 10),\n    DistinctApps = make_set(AppDisplayName, 10),\n    ObservedRiskEvents = make_set(RiskEventTypes, 10),\n    ObservedRiskLevels = make_set(RiskLevel, 5),\n    LatestIP = take_any(CleanIP),\n    FirstSeen = min(TimeGenerated),\n    LastSeen = max(TimeGenerated)\n    by UserPrincipalName, UserId\n| extend AccountName = tostring(split(UserPrincipalName, \"@\")[0]),\n         UPNSuffix = tostring(split(UserPrincipalName, \"@\")[1]),\n         LocationsStr = tostring(DistinctLocations),\n         RiskEventsStr = tostring(ObservedRiskEvents)\n| project\n    FirstSeen,\n    LastSeen,\n    UserPrincipalName,\n    AccountName,\n    UPNSuffix,\n    UserId,\n    LatestIP,\n    SignInCount,\n    DistinctLocations,\n    DistinctIPs,\n    DistinctApps,\n    LocationsStr,\n    RiskEventsStr",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT2H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "tactics": [
+          "InitialAccess",
+          "DefenseEvasion"
+        ],
+        "techniques": [
+          "T1078"
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": false,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities",
+            "groupByEntities": [],
+            "groupByAlertDetails": [],
+            "groupByCustomDetails": []
+          }
+        },
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "eventGroupingSettings": {
+          "aggregationKind": "SingleAlert"
+        },
+        "entityMappings": [
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "identifier": "Name",
+                "columnName": "AccountName"
+              },
+              {
+                "identifier": "UPNSuffix",
+                "columnName": "UPNSuffix"
+              },
+              {
+                "identifier": "AadUserId",
+                "columnName": "UserId"
+              }
+            ]
+          },
+          {
+            "entityType": "IP",
+            "fieldMappings": [
+              {
+                "identifier": "Address",
+                "columnName": "LatestIP"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "ObservedLocations": "LocationsStr",
+          "DetectedRisks": "RiskEventsStr",
+          "TotalSignIns": "SignInCount"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/dd4b30bb-c8d5-438c-abd4-011f5a5ddba0')]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Entra ID - MFA Disabled or Strong Auth Method Removed",
+        "description": "Detects when Multi-Factor Authentication (MFA) is disabled or strong authentication methods (FIDO2 keys,\nAuthenticator apps, phone methods) are removed for a user in Entra ID (AuditLogs).\nFocuses on administrative resets and deletions to identify persistent access setup by compromised administrators (T1556.006).\n",
+        "severity": "High",
+        "enabled": true,
+        "query": "// Lookback window provides 1h overlap with PT1H frequency for cloud audit log latency\nlet lookback = 2h;\nlet sensitiveOperations = dynamic([\n    \"Delete strong authentication method\",\n    \"Disable Strong Authentication\",\n    \"Admin deleted security info\",\n    \"Delete authentication method\"\n]);\nAuditLogs\n| where TimeGenerated >= ago(lookback)\n| where Result =~ \"success\"\n| where OperationName in~ (sensitiveOperations)\n| extend ActorUser = tostring(InitiatedBy.user.userPrincipalName),\n         ActorApp  = tostring(InitiatedBy.app.displayName),\n         ActorIP   = tostring(InitiatedBy.user.ipAddress)\n| extend Actor = coalesce(ActorUser, ActorApp)\n| mv-expand tr = TargetResources\n| where tostring(tr.type) =~ \"User\"\n| extend TargetUser = tostring(tr.userPrincipalName)\n| extend TargetUserName = tostring(split(TargetUser, \"@\")[0]),\n         TargetUPNSuffix = tostring(split(TargetUser, \"@\")[1]),\n         ActorName = tostring(split(ActorUser, \"@\")[0]),\n         ActorUPNSuffix = tostring(split(ActorUser, \"@\")[1])\n| project\n    TimeGenerated,\n    OperationName,\n    Actor,\n    ActorName,\n    ActorUPNSuffix,\n    ActorIP,\n    TargetUser,\n    TargetUserName,\n    TargetUPNSuffix,\n    ResultReason,\n    Category",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT2H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "tactics": [
+          "Persistence",
+          "DefenseEvasion"
+        ],
+        "techniques": [
+          "T1556"
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": false,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities",
+            "groupByEntities": [],
+            "groupByAlertDetails": [],
+            "groupByCustomDetails": []
+          }
+        },
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "eventGroupingSettings": {
+          "aggregationKind": "SingleAlert"
+        },
+        "entityMappings": [
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "identifier": "Name",
+                "columnName": "TargetUserName"
+              },
+              {
+                "identifier": "UPNSuffix",
+                "columnName": "TargetUPNSuffix"
+              }
+            ]
+          },
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "identifier": "Name",
+                "columnName": "ActorName"
+              },
+              {
+                "identifier": "UPNSuffix",
+                "columnName": "ActorUPNSuffix"
+              }
+            ]
+          },
+          {
+            "entityType": "IP",
+            "fieldMappings": [
+              {
+                "identifier": "Address",
+                "columnName": "ActorIP"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "ModifiedUser": "TargetUser",
+          "AuthOperation": "OperationName",
+          "InitiatingAdmin": "Actor"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+id: 5e2e9b8c-a74c-4b1a-a639-3f9eeff6aa67
+name: Mass File Deletion - Potential Ransomware or Wiper Activity
+description: |
+  Detects an unusually rapid burst of file deletion operations initiated by a user-space process.
+  This burst activity is characteristic of ransomware wiping shadow copies and original files, or wiper malware
+  causing data destruction (T1485). Monitors Sysmon Event IDs 23 (FileDelete) and 26 (FileDeleteDetected).
+kind: Scheduled
+version: 1.0.0
+severity: High
+status: Available
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - Event
+queryFrequency: PT5M
+queryPeriod: PT15M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - Impact
+relevantTechniques:
+  - T1485
+query: |
+  // Lab threshold set to 30; baseline and raise to 100+ for production workstations
+  let threshold = 30;
+  let lookback = 15m;
+  let benignPaths = dynamic([
+      @"C:\Windows\System32\cleanmgr.exe",
+      @"C:\Windows\System32\msiexec.exe",
+      @"C:\Windows\System32\TiWorker.exe",
+      @"C:\Windows\servicing\TrustedInstaller.exe"
+  ]);
+  Event
+  | where TimeGenerated >= ago(lookback)
+  | where Source == "Microsoft-Windows-Sysmon" and EventID in (23, 26)
+  | parse EventData with * '<Data Name="User">' ExecutingUser '</Data>' *
+                          '<Data Name="Image">' InitiatingProcess '</Data>' *
+                          '<Data Name="TargetFilename">' TargetFile '</Data>' *
+  | where not(InitiatingProcess in~ (benignPaths))
+  | summarize
+      DeletedFilesCount = count(),
+      SampleFiles = make_set(TargetFile, 10),
+      StartTime = min(TimeGenerated),
+      EndTime = max(TimeGenerated)
+      by Computer, InitiatingProcess, ExecutingUser
+  | where DeletedFilesCount >= threshold
+  | extend ActorDomain = tostring(split(ExecutingUser, @"\")[0]),
+           ActorName = tostring(split(ExecutingUser, @"\")[ -1]),
+           SampleFilesStr = tostring(SampleFiles)
+  | project
+      StartTime,
+      EndTime,
+      Computer,
+      InitiatingProcess,
+      ActorName,
+      ActorDomain,
+      DeletedFilesCount,
+      SampleFiles,
+      SampleFilesStr
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: Computer
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: ActorName
+      - identifier: NTDomain
+        columnName: ActorDomain
+customDetails:
+  TotalDeletedFiles: DeletedFilesCount
+  TriggeringProcess: InitiatingProcess
+  SampleFilesList: SampleFilesStr
+falsePositives: |
+  Automated build runners, continuous integration cleanups, developers wiping test folders,
+  or enterprise disk cleanup utilities. Exclude designated build directories and baseline per host.

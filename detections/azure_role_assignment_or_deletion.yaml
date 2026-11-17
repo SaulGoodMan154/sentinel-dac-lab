@@ -1,0 +1,85 @@
+id: 59b66841-43a7-41f2-aa4d-d6d232a68dfe
+name: Azure Activity - Privileged Role Assignment or Resource Deletion Spike
+description: |
+  Detects suspicious control plane activity in Azure, specifically the assignment of high-privilege RBAC roles
+  (Owner, Contributor, User Access Administrator) or an abnormal spike in resource deletion operations (>= 5 in lookback).
+  Adversaries assign privileged roles for persistence (T1098.003) and delete cloud resources for denial of service (T1485).
+kind: Scheduled
+version: 1.0.0
+severity: High
+status: Available
+requiredDataConnectors:
+  - connectorId: AzureActivity
+    dataTypes:
+      - AzureActivity
+queryFrequency: PT30M
+queryPeriod: PT1H
+triggerOperator: GreaterThan
+triggerThreshold: 0
+tactics:
+  - PrivilegeEscalation
+  - Persistence
+  - Impact
+relevantTechniques:
+  - T1098.003
+  - T1485
+query: |
+  // Lookback window provides 30m overlap with PT30M frequency to absorb cloud activity ingestion delays
+  let lookback = 1h;
+  let privRoles = dynamic([
+      "8e3af657-a8ff-443c-a75c-2fe8c4bcb635", // Owner
+      "b24988ac-6180-42a0-ab88-20f7382dd24c", // Contributor
+      "18d7d88d-d35e-4fb5-a5c3-7773c20a72d9"  // User Access Administrator
+  ]);
+  AzureActivity
+  | where TimeGenerated >= ago(lookback)
+  | where ActivityStatusValue in~ ("Success", "Succeeded")
+  | extend Body = parse_json(tostring(parse_json(Properties).requestbody))
+  | extend RoleDefId = tostring(Body.Properties.RoleDefinitionId),
+           PrincipalId = tostring(Body.Properties.PrincipalId)
+  | extend IsPrivRole = OperationNameValue =~ "Microsoft.Authorization/roleAssignments/write" and RoleDefId has_any (privRoles)
+  | extend IsDelete = OperationNameValue endswith "/delete" and not(OperationNameValue has_any ("locks", "diagnostics", "tags"))
+  | where IsPrivRole or IsDelete
+  | summarize
+      PrivRoleGrants = countif(IsPrivRole),
+      DeletesCount = countif(IsDelete),
+      AssignedPrincipals = make_set(PrincipalId, 10),
+      TargetResources = make_set(Resource, 10),
+      StartTime = min(TimeGenerated),
+      EndTime = max(TimeGenerated)
+      by Caller, CallerIpAddress, SubscriptionId
+  | where PrivRoleGrants > 0 or DeletesCount >= 5
+  | extend CallerName = iff(Caller has "@", tostring(split(Caller, "@")[0]), Caller),
+           CallerUPNSuffix = iff(Caller has "@", tostring(split(Caller, "@")[1]), ""),
+           PrincipalsStr = tostring(AssignedPrincipals),
+           ResourcesStr = tostring(TargetResources)
+  | project
+      StartTime,
+      EndTime,
+      Caller,
+      CallerName,
+      CallerUPNSuffix,
+      CallerIpAddress,
+      SubscriptionId,
+      PrivRoleGrants,
+      DeletesCount,
+      PrincipalsStr,
+      ResourcesStr
+entityMappings:
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: CallerName
+      - identifier: UPNSuffix
+        columnName: CallerUPNSuffix
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: CallerIpAddress
+customDetails:
+  PrivRoleGrants: PrivRoleGrants
+  DeletesCount: DeletesCount
+  AssignedUsers: PrincipalsStr
+falsePositives: |
+  Authorized Infrastructure as Code (IaC) deployment pipelines (Terraform, Bicep) or scheduled environment cleanup scripts.
+  Allowlist designated automation service principal IDs.
